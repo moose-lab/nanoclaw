@@ -2,10 +2,11 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { ASSISTANT_NAME, LOCAL_MODE, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
+  runLocalAgent,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -127,8 +128,10 @@ async function runTask(
     }, TASK_CLOSE_DELAY_MS);
   };
 
+  const runFn = LOCAL_MODE ? runLocalAgent : runContainerAgent;
+
   try {
-    const output = await runContainerAgent(
+    const output = await runFn(
       group,
       {
         prompt: task.prompt,

@@ -2,7 +2,7 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { DATA_DIR, LOCAL_MODE, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -339,19 +339,28 @@ export class GroupQueue {
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
-    const activeContainers: string[] = [];
+    const activeProcesses: string[] = [];
     for (const [jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
-        activeContainers.push(state.containerName);
+        activeProcesses.push(state.containerName);
+        // In LOCAL_MODE, send SIGTERM to child processes so they exit cleanly.
+        // Docker containers are left detached (--rm cleans them up on exit).
+        if (LOCAL_MODE) {
+          state.process.kill('SIGTERM');
+        }
       }
     }
 
     logger.info(
-      { activeCount: this.activeCount, detachedContainers: activeContainers },
-      'GroupQueue shutting down (containers detached, not killed)',
+      {
+        activeCount: this.activeCount,
+        ...(LOCAL_MODE
+          ? { terminatedProcesses: activeProcesses }
+          : { detachedContainers: activeProcesses }),
+      },
+      LOCAL_MODE
+        ? 'GroupQueue shutting down (local processes terminated)'
+        : 'GroupQueue shutting down (containers detached, not killed)',
     );
   }
 }

@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
+  LOCAL_MODE,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -15,6 +16,7 @@ import {
 import {
   ContainerOutput,
   runContainerAgent,
+  runLocalAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -291,8 +293,10 @@ async function runAgent(
       }
     : undefined;
 
+  const runFn = LOCAL_MODE ? runLocalAgent : runContainerAgent;
+
   try {
-    const output = await runContainerAgent(
+    const output = await runFn(
       group,
       {
         prompt,
@@ -443,6 +447,10 @@ function recoverPendingMessages(): void {
 }
 
 function ensureContainerSystemRunning(): void {
+  if (LOCAL_MODE) {
+    logger.info('LOCAL_MODE enabled, skipping Docker checks');
+    return;
+  }
   ensureContainerRuntimeRunning();
   cleanupOrphans();
 }

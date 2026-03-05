@@ -55,7 +55,10 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const IPC_INPUT_DIR = '/workspace/ipc/input';
+const isLocalMode = !!process.env.NANOCLAW_IPC_DIR;
+const IPC_INPUT_DIR = process.env.NANOCLAW_IPC_DIR
+  ? path.join(process.env.NANOCLAW_IPC_DIR, 'input')
+  : '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
@@ -166,7 +169,10 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations';
+      const conversationsDir = path.join(
+        process.env.NANOCLAW_GROUP_DIR || '/workspace/group',
+        'conversations',
+      );
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -392,21 +398,32 @@ async function runQuery(
   let resultCount = 0;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  const globalClaudeMdPath = process.env.NANOCLAW_GLOBAL_DIR
+    ? path.join(process.env.NANOCLAW_GLOBAL_DIR, 'CLAUDE.md')
+    : '/workspace/global/CLAUDE.md';
   let globalClaudeMd: string | undefined;
   if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
-  // Discover additional directories mounted at /workspace/extra/*
-  // These are passed to the SDK so their CLAUDE.md files are loaded automatically
+  // Discover additional directories
+  // In local mode: NANOCLAW_EXTRA_DIRS is a colon-separated list of host paths
+  // In container mode: scan /workspace/extra/* for mounted directories
   const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) {
-        extraDirs.push(fullPath);
+  if (process.env.NANOCLAW_EXTRA_DIRS) {
+    for (const dir of process.env.NANOCLAW_EXTRA_DIRS.split(':').filter(Boolean)) {
+      if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+        extraDirs.push(dir);
+      }
+    }
+  } else {
+    const extraBase = '/workspace/extra';
+    if (fs.existsSync(extraBase)) {
+      for (const entry of fs.readdirSync(extraBase)) {
+        const fullPath = path.join(extraBase, entry);
+        if (fs.statSync(fullPath).isDirectory()) {
+          extraDirs.push(fullPath);
+        }
       }
     }
   }
@@ -417,7 +434,7 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
+      cwd: process.env.NANOCLAW_GROUP_DIR || '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
@@ -440,8 +457,8 @@ async function runQuery(
       settingSources: ['project', 'user'],
       mcpServers: {
         nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
+          command: isLocalMode ? 'npx' : 'node',
+          args: isLocalMode ? ['tsx', mcpServerPath] : [mcpServerPath],
           env: {
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
@@ -496,8 +513,10 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
-    // Delete the temp file the entrypoint wrote — it contains secrets
-    try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
+    // Delete the temp file the entrypoint wrote — it contains secrets (container mode only)
+    if (!process.env.NANOCLAW_IPC_DIR) {
+      try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
+    }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {
     writeOutput({
@@ -516,7 +535,10 @@ async function main(): Promise<void> {
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const mcpServerPath = path.join(
+    __dirname,
+    isLocalMode ? 'ipc-mcp-stdio.ts' : 'ipc-mcp-stdio.js',
+  );
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
